@@ -7,8 +7,8 @@
 #include <Arduino.h>
 
 // WiFi credentials
-#define SECRET_SSID "4G-MIFI-DEDB"    
-#define SECRET_PASS "12345678"
+#define SECRET_SSID "Aida's Galaxy Tab A8"    
+#define SECRET_PASS "0134886291"
 #define SECRET_CH_ID 2343382
 #define SECRET_WRITE_APIKEY "71JLCMIYYIE9KU75"
 
@@ -21,21 +21,11 @@ unsigned long myChannelNumber = SECRET_CH_ID;
 const char *myWriteAPIKey = SECRET_WRITE_APIKEY;
 
 // Define PM25 sensor pins and instances
-SoftwareSerial pmSerial(16, 17);
+SoftwareSerial pmSerial(16, 17); // RX, TX pins
 Adafruit_PM25AQI aqi = Adafruit_PM25AQI();
 
-// Define MQ135 sensor pin
-#define placa "ESP32"
-#define Voltage_Resolution 3.3
-#define pin 34 // Analog input 0 of your arduino
-#define type "MQ-135" // MQ135
-#define ADC_Bit_Resolution 12 // For ESP32
-#define RatioMQ135CleanAir 3.6 // RS / R0 = 3.6 ppm
-
-MQUnifiedsensor MQ135(placa, Voltage_Resolution, ADC_Bit_Resolution, pin, type);
-
-// Sound sensor pin
-const int soundSensorPin = 35;
+const int mq135Pin = 34; // Pin connected to the analog output of MQ135 sensor
+const int soundSensorPin = 35; // Sound sensor pin
 
 // SHT30 I2C address
 #define SHT30_I2C_ADDR 0x44
@@ -51,33 +41,28 @@ void setup() {
       delay(10);
     }
   }
-  Serial.println("PM25 found!");
+  Serial.println("PM25 sensor found!");
 
-  pinMode(pin, INPUT);
+  pinMode(mq135Pin, INPUT);
   pinMode(soundSensorPin, INPUT);
 
   WiFi.mode(WIFI_STA);
   ThingSpeak.begin(client);
+}
 
-  // Initialize MQ135 sensor
-  MQ135.setRegressionMethod(1); // _PPM = a*ratio^b
-  MQ135.init();
-
-  Serial.print("Calibrating please wait.");
-  float calcR0 = 0;
-  for (int i = 1; i <= 10; i++) {
-    MQ135.update();
-    calcR0 += MQ135.calibrate(RatioMQ135CleanAir);
-    Serial.print(".");
-  }
-  MQ135.setR0(calcR0 / 10);
-  Serial.println("  done!.");
-
-  if (isinf(calcR0)) { Serial.println("Warning: Connection issue, R0 is infinite (Open circuit detected) please check your wiring and supply"); while (1); }
-  if (calcR0 == 0) { Serial.println("Warning: Connection issue found, R0 is zero (Analog pin shorts to ground) please check your wiring and supply"); while (1); }
-
-  Serial.println("** Values from MQ-135 ****");
-  Serial.println("|    CO   |   CO2  |");
+float get_CO_ppm(float voltage) {
+  // Function to calculate CO concentration in ppm
+  // You need to calibrate this function based on your sensor's characteristics
+  // Placeholder code is provided for demonstration purposes
+  
+  // Example calibration values (adjust according to your sensor's characteristics)
+  float slope = -0.5; // Adjust the slope for higher values
+  float intercept = 3.0; // Adjust the intercept for higher values
+  
+  // Use the adjusted slope and intercept to calculate CO concentration in ppm
+  float CO_ppm = slope * voltage + intercept;
+  
+  return CO_ppm;
 }
 
 void loop() {
@@ -85,7 +70,7 @@ void loop() {
   PM25_AQI_Data data;
 
   if (!aqi.read(&data)) {
-    Serial.println("Could not read from AQI");
+    Serial.println("Could not read from AQI sensor");
     delay(500);
     return;
   }
@@ -93,7 +78,7 @@ void loop() {
   int pm25std = data.pm25_env;
   int pm100std = data.pm100_env;
 
-  // Read sound levels from max9814 sensor
+  // Read sound levels from sound sensor
   int maxDbValue = -1;
   for (int i = 0; i < 10; i++) {
     int rawValue = analogRead(soundSensorPin);
@@ -113,10 +98,9 @@ void loop() {
   delay(1000); // Wait for measurement to complete (adjust the delay based on your needs)
 
   // Read CO2 levels from MQ135
-  MQ135.update();
-
-  MQ135.setA(605.18); MQ135.setB(-3.937);
-  float CO = MQ135.readSensor();
+  int sensorValue = analogRead(mq135Pin);
+  float voltage = sensorValue * (3.3 / 4095.0);
+  float CO_ppm = get_CO_ppm(voltage); // Calculate CO concentration in ppm
 
   // Read temperature and humidity from SHT30
   Wire.requestFrom(SHT30_I2C_ADDR, 6);
@@ -132,12 +116,10 @@ void loop() {
   // Print sensor readings to Serial Monitor
   Serial.print("PM2.5: "); Serial.println(pm25std);
   Serial.print("PM10: "); Serial.println(pm100std);
-  Serial.print(F("Temperature: ")); Serial.print(temperature); Serial.println(" °C");
-  Serial.print(F("Humidity: ")); Serial.print(humidity); Serial.println(" %");
-  Serial.print("CO Concentration: "); Serial.print(CO); Serial.println(" ppm");
+  Serial.print("Temperature: "); Serial.print(temperature); Serial.println(" °C");
+  Serial.print("Humidity: "); Serial.print(humidity); Serial.println(" %");
+  Serial.print("CO Concentration: "); Serial.print(CO_ppm); Serial.println(" ppm");
   Serial.print("Max Sound dB: "); Serial.println(maxDbValue);
-  Serial.print("Particles > 2.5um / 0.1L air:"); Serial.println(data.particles_25um);
-  Serial.print("Particles > 10 um / 0.1L air:"); Serial.println(data.particles_100um);
 
   // Send sensor readings to ThingSpeak
   if (WiFi.status() != WL_CONNECTED) {
@@ -152,12 +134,10 @@ void loop() {
 
   ThingSpeak.setField(1, pm25std);
   ThingSpeak.setField(2, pm100std);
-  ThingSpeak.setField(3, temperature);  
+  ThingSpeak.setField(3, temperature);
   ThingSpeak.setField(4, humidity);
-  ThingSpeak.setField(5, CO);
+  ThingSpeak.setField(5, CO_ppm);
   ThingSpeak.setField(6, maxDbValue);
-  ThingSpeak.setField(7, data.particles_25um);      
-  ThingSpeak.setField(8, data.particles_100um);
 
   int x = ThingSpeak.writeFields(myChannelNumber, myWriteAPIKey);
   if (x == 200) {
